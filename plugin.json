@@ -19,6 +19,6 @@
     "interactiveCards": false,
     "reactions": false,
     "editMessage": true,
-    "media": false
+    "media": true
   }
 }

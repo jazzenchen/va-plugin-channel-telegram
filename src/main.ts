@@ -10,6 +10,8 @@
  * Host streams back via sessionUpdate notifications.
  */
 
+import os from "node:os";
+import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
   ClientSideConnection,
@@ -130,15 +132,16 @@ async function start(): Promise<void> {
   const meta = (initResponse as any)._meta as Record<string, unknown> | undefined;
   const config = (meta?.config ?? {}) as Record<string, unknown>;
   const botToken = config.bot_token as string;
+  const cacheDir = (meta?.cacheDir as string) ?? path.join(os.homedir(), ".vibearound", ".cache");
 
   if (!botToken) {
     throw new Error("bot_token is required in Telegram config");
   }
 
-  log("info", `initialized, host=${initResponse.agentInfo?.name ?? "unknown"}`);
+  log("info", `initialized, host=${initResponse.agentInfo?.name ?? "unknown"} cacheDir=${cacheDir}`);
 
   // Create Telegram bot — pass agent reference for sending prompts
-  telegramBot = new TelegramBot({ bot_token: botToken }, agent!, log);
+  telegramBot = new TelegramBot({ bot_token: botToken }, agent!, log, cacheDir);
   const botInfo = await telegramBot.probe();
   log("info", `bot identity: @${botInfo.username} (${botInfo.id})`);
 

@@ -7,10 +7,12 @@
  *   - Callback query handling → ACP extNotification to Host
  */
 
+import path from "node:path";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
-import type { Agent } from "@agentclientprotocol/sdk";
+import type { Agent, ContentBlock } from "@agentclientprotocol/sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
+import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
 
 export interface TelegramConfig {
   bot_token: string;
@@ -23,11 +25,15 @@ export class TelegramBot {
   readonly bot: Bot<BotContext>;
   private agent: Agent;
   private log: LogFn;
+  private botToken: string;
+  private cacheDir: string;
   private streamHandler: AgentStreamHandler | null = null;
 
-  constructor(config: TelegramConfig, agent: Agent, log: LogFn) {
+  constructor(config: TelegramConfig, agent: Agent, log: LogFn, cacheDir: string) {
     this.agent = agent;
     this.log = log;
+    this.botToken = config.bot_token;
+    this.cacheDir = cacheDir;
     this.bot = new Bot<BotContext>(config.bot_token);
 
     // Install auto-retry (handles rate limits)
@@ -65,6 +71,13 @@ export class TelegramBot {
   // --------------------------------------------------------------------------
 
   private registerHandlers(): void {
+    this.bot.on("message:photo", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:document", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:video", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:voice", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:audio", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:sticker", (ctx) => { this.handleMediaMessage(ctx); });
+
     this.bot.on("message:text", (ctx) => {
       this.handleTextMessage(ctx);
     });
@@ -106,6 +119,123 @@ export class TelegramBot {
       const response = await this.agent.prompt({
         sessionId: chatId,
         prompt: [{ type: "text", text: msg.text }],
+      });
+      this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
+      this.streamHandler?.onTurnComplete(chatId);
+    } catch (error: unknown) {
+      this.log("error", `prompt failed chat=${chatId}: ${error}`);
+      this.streamHandler?.onError(chatId, String(error));
+    } finally {
+      clearInterval(typingInterval);
+    }
+  }
+
+  private async handleMediaMessage(ctx: Context): Promise<void> {
+    const msg = ctx.message;
+    if (!msg) return;
+
+    const chat = msg.chat;
+    const from = msg.from;
+    if (!from) return;
+
+    const chatId = String(chat.id);
+    const messageId = String(msg.message_id);
+    const caption = msg.caption ?? "";
+
+    // Determine file info based on message type
+    let fileId: string | undefined;
+    let fileName: string | undefined;
+    let mimeType: string;
+    let ext: string;
+    let mediaType: DownloadedMedia["type"];
+
+    if (msg.photo && msg.photo.length > 0) {
+      const largest = msg.photo[msg.photo.length - 1];
+      fileId = largest.file_id;
+      mimeType = "image/jpeg";
+      ext = ".jpg";
+      mediaType = "image";
+    } else if (msg.document) {
+      fileId = msg.document.file_id;
+      fileName = msg.document.file_name ?? undefined;
+      mimeType = msg.document.mime_type ?? "application/octet-stream";
+      ext = fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : ".bin";
+      mediaType = "file";
+    } else if (msg.video) {
+      fileId = msg.video.file_id;
+      fileName = msg.video.file_name ?? undefined;
+      mimeType = msg.video.mime_type ?? "video/mp4";
+      ext = ".mp4";
+      mediaType = "video";
+    } else if (msg.voice) {
+      fileId = msg.voice.file_id;
+      mimeType = msg.voice.mime_type ?? "audio/ogg";
+      ext = ".ogg";
+      mediaType = "voice";
+    } else if (msg.audio) {
+      fileId = msg.audio.file_id;
+      fileName = msg.audio.file_name ?? undefined;
+      mimeType = msg.audio.mime_type ?? "audio/mpeg";
+      ext = fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : ".mp3";
+      mediaType = "audio";
+    } else if (msg.sticker) {
+      fileId = msg.sticker.file_id;
+      mimeType = msg.sticker.is_animated ? "application/x-tgsticker" : "image/webp";
+      ext = msg.sticker.is_animated ? ".tgs" : ".webp";
+      mediaType = "sticker";
+    } else {
+      return;
+    }
+
+    if (!fileId) return;
+
+    this.log("debug", `media message chat=${chatId} type=${mediaType} caption=${caption.slice(0, 80)}`);
+
+    // Download and cache the file
+    const media = await downloadTelegramFile({
+      api: this.bot.api,
+      botToken: this.botToken,
+      fileId,
+      cacheDir: this.cacheDir,
+      chatId,
+      messageId,
+      ext,
+      mimeType,
+      type: mediaType,
+      fileName,
+    });
+
+    // Build content blocks
+    const contentBlocks: ContentBlock[] = [];
+
+    if (caption) {
+      contentBlocks.push({ type: "text", text: caption });
+    } else {
+      contentBlocks.push({ type: "text", text: `The user sent ${mediaType === "image" ? "an image" : `a ${mediaType}`}.` });
+    }
+
+    if (media) {
+      contentBlocks.push({
+        type: "resource_link",
+        uri: `file://${media.path}`,
+        name: media.fileName ?? path.basename(media.path),
+        mimeType: media.mimeType,
+      });
+    }
+
+    // Notify stream handler before prompt
+    this.streamHandler?.onPromptSent(chatId);
+
+    // Typing indicator
+    await this.bot.api.sendChatAction(chat.id, "typing").catch(() => {});
+    const typingInterval = setInterval(() => {
+      this.bot.api.sendChatAction(chat.id, "typing").catch(() => {});
+    }, 4000);
+
+    try {
+      const response = await this.agent.prompt({
+        sessionId: chatId,
+        prompt: contentBlocks,
       });
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnComplete(chatId);
