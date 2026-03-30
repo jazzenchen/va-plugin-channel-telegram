@@ -1,96 +1,110 @@
 /**
- * AgentStreamHandler — receives ACP session updates and renders them as
- * separate Telegram messages, one per contiguous variant block.
+ * AgentStreamHandler — receives ACP session updates from the Host and renders
+ * them as separate Telegram messages, one per contiguous variant block.
  *
- * Each contiguous run of the same variant (thinking, tool, text) becomes
- * one Telegram message. The current (unsealed) block streams in-place via
- * editMessageText. When the variant changes, the block is sealed (no more
- * edits) and a new message is created for the next block.
+ * Extends BlockRenderer from @vibearound/plugin-channel-sdk which handles:
+ *   - Block accumulation and kind-change detection
+ *   - Debounced flushing + edit throttling (1000ms for Telegram's rate limit)
+ *   - Serialized sendChain for guaranteed message order
+ *   - Verbose filtering (thinking / tool blocks)
  */
 
-import type { SessionNotification } from "@agentclientprotocol/sdk";
+import {
+  BlockRenderer,
+  type BlockKind,
+  type VerboseConfig,
+} from "@vibearound/plugin-channel-sdk";
 import type { TelegramBot } from "./bot.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type BlockKind = "thinking" | "tool" | "text";
-
-interface MessageBlock {
-  kind: BlockKind;
-  content: string;
-  /** Telegram message_id (set after first send). */
-  messageId: number | null;
-  /** Whether this block has been sealed (no more edits). */
-  sealed: boolean;
-}
-
-interface ChannelState {
-  blocks: MessageBlock[];
-  chatId: number;
-  /** Flush timer handle. */
-  flushTimer: ReturnType<typeof setTimeout> | null;
-  /** Timestamp of last edit (for throttling). */
-  lastEditMs: number;
-  /** Serializes sendMessage calls to guarantee message order. */
-  sendChain: Promise<void>;
-}
-
 type LogFn = (level: string, msg: string) => void;
-
-/** Minimum interval between message edits (ms). Telegram rate limit. */
-const MIN_EDIT_INTERVAL_MS = 1000;
-
-/** Flush interval for batching deltas (ms). */
-const FLUSH_INTERVAL_MS = 500;
 
 // ---------------------------------------------------------------------------
 // AgentStreamHandler
 // ---------------------------------------------------------------------------
 
-export interface VerboseConfig {
-  showThinking: boolean;
-  showToolUse: boolean;
-}
-
-export class AgentStreamHandler {
+export class AgentStreamHandler extends BlockRenderer<number> {
   private telegramBot: TelegramBot;
   private log: LogFn;
-  private verbose: VerboseConfig;
-  private channels = new Map<string, ChannelState>();
   private lastSessionId: string | null = null;
 
   constructor(telegramBot: TelegramBot, log: LogFn, verbose?: Partial<VerboseConfig>) {
+    super({
+      flushIntervalMs: 500,
+      minEditIntervalMs: 1000,
+      verbose,
+    });
     this.telegramBot = telegramBot;
     this.log = log;
-    this.verbose = {
-      showThinking: verbose?.showThinking ?? false,
-      showToolUse: verbose?.showToolUse ?? false,
-    };
   }
 
-  /** Called when a prompt is sent — init state. */
-  onPromptSent(sessionId: string): void {
-    this.lastSessionId = sessionId;
-    const chatId = parseInt(sessionId, 10);
+  // ---- BlockRenderer overrides ----
+
+  /** Telegram uses plain text with emoji prefixes. */
+  protected formatContent(kind: BlockKind, content: string, _sealed: boolean): string {
+    switch (kind) {
+      case "thinking": return `💭 ${content}`;
+      case "tool":     return content.trim();
+      case "text":     return content;
+    }
+  }
+
+  /** Send new message via Telegram API. */
+  protected async sendBlock(channelId: string, _kind: BlockKind, content: string): Promise<number | null> {
+    const chatId = parseInt(channelId, 10);
+    if (isNaN(chatId)) return null;
+    try {
+      const msg = await this.telegramBot.bot.api.sendMessage(chatId, content);
+      return msg.message_id;
+    } catch (e) {
+      this.log("error", `sendBlock failed: ${e}`);
+      return null;
+    }
+  }
+
+  /** Edit existing message for streaming updates. */
+  protected async editBlock(
+    channelId: string,
+    ref: number,
+    _kind: BlockKind,
+    content: string,
+    _sealed: boolean,
+  ): Promise<void> {
+    const chatId = parseInt(channelId, 10);
     if (isNaN(chatId)) return;
-
-    // Clean up old state
-    const old = this.channels.get(sessionId);
-    if (old?.flushTimer) clearTimeout(old.flushTimer);
-    this.channels.delete(sessionId);
-
-    this.channels.set(sessionId, {
-      blocks: [],
-      chatId,
-      flushTimer: null,
-      lastEditMs: 0,
-      sendChain: Promise.resolve(),
-    });
+    try {
+      await this.telegramBot.bot.api.editMessageText(chatId, ref, content);
+    } catch (e) {
+      this.log("error", `editBlock failed: ${e}`);
+    }
   }
 
-  /** Agent initialized — send info message. */
+  /** Cleanup after turn completes. */
+  protected async onAfterTurnEnd(channelId: string): Promise<void> {
+    this.log("debug", `turn_complete session=${channelId}`);
+  }
+
+  /** Send error message to user. */
+  protected async onAfterTurnError(channelId: string, error: string): Promise<void> {
+    const chatId = parseInt(channelId, 10);
+    if (!isNaN(chatId)) {
+      this.telegramBot.bot.api.sendMessage(chatId, `❌ Error: ${error}`).catch(() => {});
+    }
+  }
+
+  // ---- Prompt lifecycle ----
+
+  /** Called before sending a prompt — resets state and tracks session. */
+  onPromptSent(channelId: string): void {
+    this.lastSessionId = channelId;
+    super.onPromptSent(channelId);
+  }
+
+  // ---- Host ext notification handlers ----
+
   onAgentReady(agent: string, version: string): void {
     const chatId = this.lastSessionId ? parseInt(this.lastSessionId, 10) : null;
     if (chatId && !isNaN(chatId)) {
@@ -98,7 +112,6 @@ export class AgentStreamHandler {
     }
   }
 
-  /** Session ready — send session info. */
   onSessionReady(sessionId: string): void {
     const chatId = this.lastSessionId ? parseInt(this.lastSessionId, 10) : null;
     if (chatId && !isNaN(chatId)) {
@@ -106,182 +119,10 @@ export class AgentStreamHandler {
     }
   }
 
-  /** Handle system text from host. */
   onSystemText(text: string): void {
     const chatId = this.lastSessionId ? parseInt(this.lastSessionId, 10) : null;
     if (chatId && !isNaN(chatId)) {
       this.telegramBot.bot.api.sendMessage(chatId, text).catch(() => {});
-    }
-  }
-
-  // ---- ACP SessionUpdate dispatcher ----
-
-  onSessionUpdate(notification: SessionNotification): void {
-    const sessionId = notification.sessionId;
-    const update = notification.update;
-    const variant = (update as any).sessionUpdate as string;
-
-    switch (variant) {
-      case "agent_message_chunk": {
-        const content = (update as any).content as { text?: string } | undefined;
-        const delta = content?.text ?? "";
-        if (delta) this.appendToBlock(sessionId, "text", delta);
-        break;
-      }
-      case "agent_thought_chunk": {
-        if (!this.verbose.showThinking) return;
-        const content = (update as any).content as { text?: string } | undefined;
-        const delta = content?.text ?? "";
-        if (delta) this.appendToBlock(sessionId, "thinking", delta);
-        break;
-      }
-      case "tool_call": {
-        if (!this.verbose.showToolUse) return;
-        // ACP ToolCall: { toolCallId, title, kind, status, ... }
-        const toolTitle = (update as any).title as string | undefined;
-        if (toolTitle) this.appendToBlock(sessionId, "tool", `🔧 ${toolTitle}\n`);
-        break;
-      }
-      case "tool_call_update": {
-        if (!this.verbose.showToolUse) return;
-        const title = (update as any).title as string | undefined;
-        const status = (update as any).status as string | undefined;
-        const label = title ?? "tool";
-        if (status === "completed" || status === "error") {
-          this.appendToBlock(sessionId, "tool", `✅ ${label}\n`);
-        }
-        break;
-      }
-      default:
-        this.log("debug", `unhandled session update variant: ${variant}`);
-    }
-  }
-
-  // ---- Turn lifecycle (called from bot.ts after prompt() returns) ----
-
-  /** Called when prompt() returns — seal last block. */
-  onTurnComplete(sessionId: string): void {
-    const state = this.channels.get(sessionId);
-    if (!state) return;
-
-    this.log("debug", `turn_complete session=${sessionId} blocks=${state.blocks.length}`);
-
-    if (state.flushTimer) {
-      clearTimeout(state.flushTimer);
-      state.flushTimer = null;
-    }
-
-    // Seal and flush last block
-    const last = state.blocks[state.blocks.length - 1];
-    if (last && !last.sealed) {
-      last.sealed = true;
-      this.enqueueFlush(state, last);
-    }
-
-    this.channels.delete(sessionId);
-  }
-
-  /** Called on prompt error. */
-  onError(sessionId: string, errorText: string): void {
-    this.log("error", `error session=${sessionId}: ${errorText}`);
-
-    const state = this.channels.get(sessionId);
-    if (state?.flushTimer) clearTimeout(state.flushTimer);
-
-    const chatId = state?.chatId ?? parseInt(sessionId, 10);
-    if (!isNaN(chatId)) {
-      this.telegramBot.bot.api.sendMessage(chatId, `❌ Error: ${errorText}`).catch(() => {});
-    }
-
-    this.channels.delete(sessionId);
-  }
-
-  // ---- Block management ----
-
-  private appendToBlock(sessionId: string, kind: BlockKind, delta: string): void {
-    const state = this.channels.get(sessionId);
-    if (!state) return;
-
-    const current = state.blocks.length > 0
-      ? state.blocks[state.blocks.length - 1]
-      : null;
-
-    if (current && !current.sealed && current.kind === kind) {
-      current.content += delta;
-    } else {
-      // Seal current block
-      if (current && !current.sealed) {
-        current.sealed = true;
-        this.enqueueFlush(state, current);
-      }
-      state.blocks.push({ kind, content: delta, messageId: null, sealed: false });
-    }
-
-    this.scheduleFlush(sessionId);
-  }
-
-  private scheduleFlush(sessionId: string): void {
-    const state = this.channels.get(sessionId);
-    if (!state || state.flushTimer) return;
-
-    state.flushTimer = setTimeout(() => {
-      state.flushTimer = null;
-      this.flush(sessionId);
-    }, FLUSH_INTERVAL_MS);
-  }
-
-  private flush(sessionId: string): void {
-    const state = this.channels.get(sessionId);
-    if (!state) return;
-
-    const block = state.blocks.length > 0
-      ? state.blocks[state.blocks.length - 1]
-      : null;
-    if (!block || block.sealed || !block.content) return;
-
-    const now = Date.now();
-    if (now - state.lastEditMs < MIN_EDIT_INTERVAL_MS) {
-      this.scheduleFlush(sessionId);
-      return;
-    }
-
-    this.enqueueFlush(state, block);
-  }
-
-  /** Chain flushBlock onto the send queue to guarantee message order. */
-  private enqueueFlush(state: ChannelState, block: MessageBlock): void {
-    state.sendChain = state.sendChain
-      .then(() => this.flushBlock(state, block))
-      .catch((e) => this.log("error", `enqueueFlush error: ${e}`));
-  }
-
-  private async flushBlock(state: ChannelState, block: MessageBlock): Promise<void> {
-    const text = this.formatBlock(block);
-    if (!text) return;
-
-    try {
-      if (!block.messageId) {
-        block.messageId = -1; // sentinel to prevent concurrent creates
-        const msg = await this.telegramBot.bot.api.sendMessage(state.chatId, text);
-        block.messageId = msg.message_id;
-        state.lastEditMs = Date.now();
-      } else if (block.messageId > 0) {
-        await this.telegramBot.bot.api.editMessageText(state.chatId, block.messageId, text);
-        state.lastEditMs = Date.now();
-      }
-    } catch (e) {
-      this.log("error", `flushBlock failed: ${e}`);
-    }
-  }
-
-  private formatBlock(block: MessageBlock): string {
-    switch (block.kind) {
-      case "thinking":
-        return `💭 ${block.content}`;
-      case "tool":
-        return block.content.trim();
-      case "text":
-        return block.content;
     }
   }
 }

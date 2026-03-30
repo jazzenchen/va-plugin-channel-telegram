@@ -10,7 +10,7 @@
 import path from "node:path";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
-import type { Agent, ContentBlock } from "@agentclientprotocol/sdk";
+import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
 
@@ -121,10 +121,10 @@ export class TelegramBot {
         prompt: [{ type: "text", text: msg.text }],
       });
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnComplete(chatId);
+      this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
       this.log("error", `prompt failed chat=${chatId}: ${error}`);
-      this.streamHandler?.onError(chatId, String(error));
+      this.streamHandler?.onTurnError(chatId, String(error));
     } finally {
       clearInterval(typingInterval);
     }
@@ -238,10 +238,10 @@ export class TelegramBot {
         prompt: contentBlocks,
       });
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnComplete(chatId);
+      this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
       this.log("error", `prompt failed chat=${chatId}: ${error}`);
-      this.streamHandler?.onError(chatId, String(error));
+      this.streamHandler?.onTurnError(chatId, String(error));
     } finally {
       clearInterval(typingInterval);
     }
