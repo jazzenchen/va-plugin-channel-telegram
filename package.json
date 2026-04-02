@@ -11,9 +11,9 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@vibearound/plugin-channel-sdk": "^0.1.2",
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/stream": "^1.0.1",
+    "@vibearound/plugin-channel-sdk": "^0.1.2",
     "grammy": "^1.35.0"
   },
   "devDependencies": {
