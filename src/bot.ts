@@ -259,8 +259,8 @@ export class TelegramBot {
 
     // Send as ACP extension notification
     this.agent
-      .extNotification?.("channel/callback", {
-        channelId: `telegram:${chatId}`,
+      .extNotification?.("_va/callback", {
+        chatId: String(chatId),
         callbackId: query.id,
         sender: {
           id: String(from.id),
