@@ -6,6 +6,7 @@
 import {
   BlockRenderer,
   type BlockKind,
+  type RequestPermissionRequest,
   type VerboseConfig,
 } from "@vibearound/plugin-channel-sdk";
 import type { TelegramBot } from "./bot.js";
@@ -25,6 +26,37 @@ export class AgentStreamHandler extends BlockRenderer<number> {
     });
     this.telegramBot = telegramBot;
     this.log = log;
+  }
+
+  /** Render permission request as inline keyboard. */
+  protected async onRequestPermission(
+    chatId: string,
+    request: RequestPermissionRequest,
+    callbackId: string,
+  ): Promise<void> {
+    const id = parseInt(chatId, 10);
+    if (isNaN(id)) return;
+    const options = request.options ?? [];
+    const toolTitle =
+      (request.toolCall as { title?: string } | undefined)?.title ?? "the agent";
+
+    // Single row with all buttons side-by-side. Telegram auto-wraps if the
+    // row is too wide, so 3-4 short labels fit fine; longer labels may spill
+    // to extra rows automatically on the client.
+    const keyboard = [
+      options.map((opt) => ({
+        text: opt.name,
+        // Telegram callback data is capped at 64 bytes. callbackId is ~12
+        // chars, optionId is typically short ("allow_once" etc).
+        callback_data: `va_perm:${callbackId}:${opt.optionId}`.slice(0, 64),
+      })),
+    ];
+
+    await this.telegramBot.bot.api.sendMessage(
+      id,
+      `🔐 Permission required — ${toolTitle}`,
+      { reply_markup: { inline_keyboard: keyboard } },
+    );
   }
 
   protected async sendText(chatId: string, text: string): Promise<void> {
