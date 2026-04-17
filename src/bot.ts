@@ -104,6 +104,11 @@ export class TelegramBot {
 
     this.log("debug", `message chat=${chatId} text=${msg.text.slice(0, 80)}`);
 
+    // If a permission prompt is awaiting a text reply, consume this message.
+    if (this.streamHandler?.consumePendingText(chatId, msg.text)) {
+      return;
+    }
+
     // Notify stream handler before prompt
     this.streamHandler?.onPromptSent(chatId);
 
@@ -257,7 +262,56 @@ export class TelegramBot {
     const chatId = query.message?.chat?.id;
     if (!chatId) return;
 
-    // Send as ACP extension notification
+    // Permission button — format: va_perm:<callbackId>:<optionId>
+    if (query.data.startsWith("va_perm:")) {
+      const rest = query.data.slice("va_perm:".length);
+      const colon = rest.indexOf(":");
+      if (colon > 0) {
+        const callbackId = rest.slice(0, colon);
+        const optionId = rest.slice(colon + 1);
+
+        // Look up the button label from the original keyboard before we wipe it.
+        const keyboard = query.message?.reply_markup?.inline_keyboard ?? [];
+        let optionName = optionId;
+        for (const row of keyboard) {
+          for (const btn of row) {
+            if ("callback_data" in btn && btn.callback_data === query.data) {
+              optionName = btn.text;
+            }
+          }
+        }
+
+        const ok =
+          this.streamHandler?.resolvePermission(callbackId, optionId) ?? false;
+        this.log(
+          "info",
+          `permission resolve cb=${callbackId} option=${optionId} ok=${ok}`,
+        );
+
+        // Replace the message: remove buttons + show selected label.
+        const chatIdNum = query.message?.chat?.id;
+        const messageId = query.message?.message_id;
+        if (chatIdNum != null && messageId != null) {
+          const finalText = ok
+            ? `🔐 Permission — selected: ${optionName}`
+            : `🔐 Permission — already handled`;
+          this.bot.api
+            .editMessageText(chatIdNum, messageId, finalText)
+            .catch((e) =>
+              this.log("error", `telegram edit permission msg failed: ${e}`),
+            );
+        }
+
+        ctx
+          .answerCallbackQuery({ text: ok ? `Selected: ${optionName}` : "" })
+          .catch(() => {});
+      } else {
+        ctx.answerCallbackQuery().catch(() => {});
+      }
+      return;
+    }
+
+    // Generic callback — forward to host.
     this.agent
       .extNotification?.("_va/callback", {
         chatId: String(chatId),
@@ -274,7 +328,6 @@ export class TelegramBot {
       })
       .catch(() => {});
 
-    // Acknowledge the callback query
     ctx.answerCallbackQuery().catch(() => {});
   }
 }
