@@ -28,4 +28,14 @@ runChannelPlugin({
   },
   createRenderer: (bot, log, verbose) =>
     new AgentStreamHandler(bot, log, verbose),
+  // Heartbeat health check — bot.api.getMe() exercises the Telegram HTTPS
+  // connection. Failing = skip heartbeat = host watchdog will restart us.
+  healthCheck: async (bot) => {
+    try {
+      await bot.bot.api.getMe();
+      return true;
+    } catch {
+      return false;
+    }
+  },
 });
