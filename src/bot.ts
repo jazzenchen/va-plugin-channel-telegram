@@ -10,6 +10,7 @@
 import path from "node:path";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
+import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
 import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
@@ -128,7 +129,7 @@ export class TelegramBot {
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
+      const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
       this.streamHandler?.onTurnError(chatId, msg);
     } finally {
@@ -246,7 +247,7 @@ export class TelegramBot {
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
+      const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
       this.streamHandler?.onTurnError(chatId, msg);
     } finally {
