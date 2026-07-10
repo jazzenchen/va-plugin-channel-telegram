@@ -14,6 +14,7 @@ import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
 import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
+import { normalizeTelegramPromptText, shouldHandleTelegramInbound } from "./inbound-policy.js";
 
 export interface TelegramConfig {
   bot_token: string;
@@ -100,13 +101,27 @@ export class TelegramBot {
     const from = msg.from;
     if (!from) return;
 
+    const entities = ctx.entities(["mention", "text_mention", "bot_command"]);
+    if (!shouldHandleTelegramInbound({
+      chatType: chat.type,
+      botId: ctx.me.id,
+      botUsername: ctx.me.username,
+      entities,
+    })) {
+      this.log("debug", `group message ignored without bot mention chat=${chat.id}`);
+      return;
+    }
+
+    const text = normalizeTelegramPromptText(msg.text, ctx.me.username);
+    if (!text) return;
+
     // Use chat_id as ACP sessionId
     const chatId = String(chat.id);
 
-    this.log("debug", `message chat=${chatId} text=${msg.text.slice(0, 80)}`);
+    this.log("debug", `message chat=${chatId} text=${text.slice(0, 80)}`);
 
     // If a permission prompt is awaiting a text reply, consume this message.
-    if (this.streamHandler?.consumePendingText(chatId, msg.text)) {
+    if (this.streamHandler?.consumePendingText(chatId, text)) {
       return;
     }
 
@@ -124,7 +139,7 @@ export class TelegramBot {
     try {
       const response = await this.agent.prompt({
         sessionId: chatId,
-        prompt: [{ type: "text", text: msg.text }],
+        prompt: [{ type: "text", text }],
       });
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
@@ -145,9 +160,20 @@ export class TelegramBot {
     const from = msg.from;
     if (!from) return;
 
+    const entities = ctx.entities(["mention", "text_mention", "bot_command"]);
+    if (!shouldHandleTelegramInbound({
+      chatType: chat.type,
+      botId: ctx.me.id,
+      botUsername: ctx.me.username,
+      entities,
+    })) {
+      this.log("debug", `group media ignored without bot mention chat=${chat.id}`);
+      return;
+    }
+
     const chatId = String(chat.id);
     const messageId = String(msg.message_id);
-    const caption = msg.caption ?? "";
+    const caption = normalizeTelegramPromptText(msg.caption ?? "", ctx.me.username);
 
     // Determine file info based on message type
     let fileId: string | undefined;
