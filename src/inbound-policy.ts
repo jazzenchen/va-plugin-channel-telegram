@@ -26,7 +26,7 @@ export function shouldHandleTelegramInbound(params: {
     }
     if (entity.type === "bot_command") {
       const target = entity.text.split("@", 2)[1];
-      return target === undefined || sameUsername(target, params.botUsername);
+      return target !== undefined && sameUsername(target, params.botUsername);
     }
     return false;
   });

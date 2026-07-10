@@ -34,12 +34,12 @@ test("username and text mentions must identify the current bot", () => {
   }), false);
 });
 
-test("platform-recognized slash commands remain valid in groups", () => {
+test("group slash commands must target the current bot", () => {
   assert.equal(shouldHandleTelegramInbound({
     ...base,
     chatType: "group",
     entities: [{ type: "bot_command", text: "/new" }],
-  }), true);
+  }), false);
   assert.equal(shouldHandleTelegramInbound({
     ...base,
     chatType: "group",
