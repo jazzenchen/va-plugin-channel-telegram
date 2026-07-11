@@ -69,8 +69,8 @@ export class TelegramBot {
   }
 
   /** Start long-polling. */
-  start(): void {
-    this.bot.start({
+  start(): Promise<void> {
+    return this.bot.start({
       onStart: () => {
         this.log("info", "bot started (long polling)");
       },
@@ -78,8 +78,12 @@ export class TelegramBot {
   }
 
   /** Stop the bot gracefully. */
-  stop(): void {
-    this.bot.stop();
+  stop(): Promise<void> {
+    return this.bot.stop();
+  }
+
+  isPolling(): boolean {
+    return this.bot.isRunning();
   }
 
   setStreamHandler(handler: AgentStreamHandler): void {
