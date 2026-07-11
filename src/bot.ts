@@ -10,7 +10,7 @@
 import path from "node:path";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
-import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
+import { extractErrorMessage, sendChannelPrompt } from "@vibearound/plugin-channel-sdk";
 import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
@@ -29,13 +29,24 @@ export class TelegramBot {
   private log: LogFn;
   private botToken: string;
   private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
   private streamHandler: AgentStreamHandler | null = null;
 
-  constructor(config: TelegramConfig, agent: Agent, log: LogFn, cacheDir: string) {
+  constructor(
+    config: TelegramConfig,
+    agent: Agent,
+    log: LogFn,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
     this.agent = agent;
     this.log = log;
     this.botToken = config.bot_token;
     this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
     this.bot = new Bot<BotContext>(config.bot_token);
 
     // Install auto-retry (handles rate limits)
@@ -137,10 +148,20 @@ export class TelegramBot {
     // Send as ACP prompt — blocks until turn completes, returns real StopReason.
     // Session notifications stream in during the call.
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
+      const response = await sendChannelPrompt(this.agent, {
+        context: {
+          channelInstanceId: this.channelInstanceId,
+          actorId: this.actorId,
+          chatId,
+          topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
+          senderId: String(from.id),
+          platformMessageId: String(msg.message_id),
+          scope: chat.type === "private" ? "dm" : "group",
+          addressedBy: chat.type === "private" ? "dm" : "mention",
+        },
         prompt: [{ type: "text", text }],
       });
+      if (!response) return;
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
@@ -266,10 +287,20 @@ export class TelegramBot {
     }, 4000);
 
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
+      const response = await sendChannelPrompt(this.agent, {
+        context: {
+          channelInstanceId: this.channelInstanceId,
+          actorId: this.actorId,
+          chatId,
+          topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
+          senderId: String(from.id),
+          platformMessageId: messageId,
+          scope: chat.type === "private" ? "dm" : "group",
+          addressedBy: chat.type === "private" ? "dm" : "mention",
+        },
         prompt: contentBlocks,
       });
+      if (!response) return;
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {

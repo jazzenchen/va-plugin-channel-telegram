@@ -15,12 +15,14 @@ runChannelPlugin({
   name: "vibearound-telegram",
   version: "0.1.0",
   requiredConfig: ["bot_token"],
-  createBot: ({ config, agent, log, cacheDir }) =>
+  createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) =>
     new TelegramBot(
       { bot_token: config.bot_token as string },
       agent,
       log,
       cacheDir,
+      channelInstanceId,
+      actorId,
     ),
   afterCreate: async (bot, log) => {
     const botInfo = await bot.probe();
