@@ -10,8 +10,13 @@
 import path from "node:path";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
-import { extractErrorMessage, sendChannelPrompt } from "@vibearound/plugin-channel-sdk";
-import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
+import {
+  cancelChannelPrompt,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
+import type { Agent, ChannelInboundContext, ContentBlock } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
 import { normalizeTelegramPromptText, shouldHandleTelegramInbound } from "./inbound-policy.js";
@@ -128,8 +133,23 @@ export class TelegramBot {
 
     // Use chat_id as ACP sessionId
     const chatId = String(chat.id);
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
+      senderId: String(from.id),
+      platformMessageId: String(msg.message_id),
+      scope: chat.type === "private" ? "dm" : "group",
+      addressedBy: chat.type === "private" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
 
     this.log("debug", `message chat=${chatId} text=${text.slice(0, 80)}`);
+
+    if (isChannelStopCommand(text)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
 
     // If a permission prompt is awaiting a text reply, consume this message.
     if (this.streamHandler?.consumePendingText(chatId, text)) {
@@ -149,16 +169,7 @@ export class TelegramBot {
     // Session notifications stream in during the call.
     try {
       const response = await sendChannelPrompt(this.agent, {
-        context: {
-          channelInstanceId: this.channelInstanceId,
-          actorId: this.actorId,
-          chatId,
-          topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
-          senderId: String(from.id),
-          platformMessageId: String(msg.message_id),
-          scope: chat.type === "private" ? "dm" : "group",
-          addressedBy: chat.type === "private" ? "dm" : "mention",
-        },
+        context: inboundContext,
         prompt: [{ type: "text", text }],
       });
       if (!response) return;
@@ -195,6 +206,20 @@ export class TelegramBot {
     const chatId = String(chat.id);
     const messageId = String(msg.message_id);
     const caption = normalizeTelegramPromptText(msg.caption ?? "", ctx.me.username);
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
+      senderId: String(from.id),
+      platformMessageId: messageId,
+      scope: chat.type === "private" ? "dm" : "group",
+      addressedBy: chat.type === "private" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
+    if (caption && isChannelStopCommand(caption)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
 
     // Determine file info based on message type
     let fileId: string | undefined;
@@ -288,16 +313,7 @@ export class TelegramBot {
 
     try {
       const response = await sendChannelPrompt(this.agent, {
-        context: {
-          channelInstanceId: this.channelInstanceId,
-          actorId: this.actorId,
-          chatId,
-          topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
-          senderId: String(from.id),
-          platformMessageId: messageId,
-          scope: chat.type === "private" ? "dm" : "group",
-          addressedBy: chat.type === "private" ? "dm" : "mention",
-        },
+        context: inboundContext,
         prompt: contentBlocks,
       });
       if (!response) return;
