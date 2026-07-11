@@ -20,6 +20,7 @@ import type { Agent, ChannelInboundContext, ContentBlock } from "@vibearound/plu
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
 import { normalizeTelegramPromptText, shouldHandleTelegramInbound } from "./inbound-policy.js";
+import { createTelegramCallbackContext } from "./route-context.js";
 
 export interface TelegramConfig {
   bot_token: string;
@@ -386,6 +387,22 @@ export class TelegramBot {
     }
 
     // Generic callback — forward to host.
+    const callbackContext = createTelegramCallbackContext({
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId: String(chatId),
+      topicId:
+        query.message &&
+        "message_thread_id" in query.message &&
+        query.message.message_thread_id != null
+          ? String(query.message.message_thread_id)
+          : undefined,
+      senderId: String(from.id),
+      platformMessageId: query.message
+        ? String(query.message.message_id)
+        : undefined,
+      scope: query.message?.chat.type === "private" ? "dm" : "group",
+    });
     this.agent
       .extNotification?.("_va/callback", {
         chatId: String(chatId),
@@ -399,6 +416,7 @@ export class TelegramBot {
         messageId: query.message
           ? String(query.message.message_id)
           : undefined,
+        "va.channel": callbackContext,
       })
       .catch(() => {});
 
