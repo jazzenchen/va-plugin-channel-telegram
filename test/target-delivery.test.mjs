@@ -43,7 +43,6 @@ test("Telegram maps topicId and replyTo onto every new message", async () => {
     });
   }
 });
-
 test("Telegram permission buttons preserve the active target", async () => {
   const { renderer, sends } = createRenderer();
 
@@ -67,4 +66,3 @@ test("Telegram permission buttons preserve the active target", async () => {
     },
   });
 });
-
