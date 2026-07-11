@@ -14,7 +14,7 @@
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/stream": "^1.0.1",
-    "@vibearound/plugin-channel-sdk": "^0.6.1",
+    "@vibearound/plugin-channel-sdk": "file:../va-plugin-channel-sdk",
     "grammy": "^1.35.0"
   },
   "devDependencies": {

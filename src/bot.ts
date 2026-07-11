@@ -12,6 +12,7 @@ import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 import {
   cancelChannelPrompt,
+  channelTargetFromInboundContext,
   extractErrorMessage,
   isChannelStopCommand,
   sendChannelPrompt,
@@ -144,6 +145,7 @@ export class TelegramBot {
       scope: chat.type === "private" ? "dm" : "group",
       addressedBy: chat.type === "private" ? "dm" : "mention",
     } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
 
     this.log("debug", `message chat=${chatId} text=${text.slice(0, 80)}`);
 
@@ -153,12 +155,12 @@ export class TelegramBot {
     }
 
     // If a permission prompt is awaiting a text reply, consume this message.
-    if (this.streamHandler?.consumePendingText(chatId, text)) {
+    if (this.streamHandler?.consumePendingText(target, text)) {
       return;
     }
 
     // Notify stream handler before prompt
-    this.streamHandler?.onPromptSent(chatId);
+    this.streamHandler?.onPromptSent(target);
 
     // Show typing indicator — resend every 4s (Telegram expires it after ~5s)
     await this.bot.api.sendChatAction(chat.id, "typing").catch(() => {});
@@ -173,13 +175,16 @@ export class TelegramBot {
         context: inboundContext,
         prompt: [{ type: "text", text }],
       });
-      if (!response) return;
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
-      this.streamHandler?.onTurnError(chatId, msg);
+      await this.streamHandler?.onTurnError(target, msg);
     } finally {
       clearInterval(typingInterval);
     }
@@ -217,6 +222,7 @@ export class TelegramBot {
       scope: chat.type === "private" ? "dm" : "group",
       addressedBy: chat.type === "private" ? "dm" : "mention",
     } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
     if (caption && isChannelStopCommand(caption)) {
       await cancelChannelPrompt(this.agent, { context: inboundContext });
       return;
@@ -304,7 +310,7 @@ export class TelegramBot {
     }
 
     // Notify stream handler before prompt
-    this.streamHandler?.onPromptSent(chatId);
+    this.streamHandler?.onPromptSent(target);
 
     // Typing indicator
     await this.bot.api.sendChatAction(chat.id, "typing").catch(() => {});
@@ -317,13 +323,16 @@ export class TelegramBot {
         context: inboundContext,
         prompt: contentBlocks,
       });
-      if (!response) return;
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
-      this.streamHandler?.onTurnError(chatId, msg);
+      await this.streamHandler?.onTurnError(target, msg);
     } finally {
       clearInterval(typingInterval);
     }
