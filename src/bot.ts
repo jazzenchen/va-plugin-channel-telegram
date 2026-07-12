@@ -10,10 +10,18 @@
 import path from "node:path";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
-import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
-import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
+import {
+  cancelChannelPrompt,
+  channelTargetFromInboundContext,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
+import type { Agent, ChannelInboundContext, ContentBlock } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadTelegramFile, type DownloadedMedia } from "./media-download.js";
+import { normalizeTelegramPromptText, shouldHandleTelegramInbound } from "./inbound-policy.js";
+import { createTelegramCallbackContext } from "./route-context.js";
 
 export interface TelegramConfig {
   bot_token: string;
@@ -28,13 +36,24 @@ export class TelegramBot {
   private log: LogFn;
   private botToken: string;
   private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
   private streamHandler: AgentStreamHandler | null = null;
 
-  constructor(config: TelegramConfig, agent: Agent, log: LogFn, cacheDir: string) {
+  constructor(
+    config: TelegramConfig,
+    agent: Agent,
+    log: LogFn,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
     this.agent = agent;
     this.log = log;
     this.botToken = config.bot_token;
     this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
     this.bot = new Bot<BotContext>(config.bot_token);
 
     // Install auto-retry (handles rate limits)
@@ -50,8 +69,8 @@ export class TelegramBot {
   }
 
   /** Start long-polling. */
-  start(): void {
-    this.bot.start({
+  start(): Promise<void> {
+    return this.bot.start({
       onStart: () => {
         this.log("info", "bot started (long polling)");
       },
@@ -59,8 +78,12 @@ export class TelegramBot {
   }
 
   /** Stop the bot gracefully. */
-  stop(): void {
-    this.bot.stop();
+  stop(): Promise<void> {
+    return this.bot.stop();
+  }
+
+  isPolling(): boolean {
+    return this.bot.isRunning();
   }
 
   setStreamHandler(handler: AgentStreamHandler): void {
@@ -100,18 +123,48 @@ export class TelegramBot {
     const from = msg.from;
     if (!from) return;
 
+    const entities = ctx.entities(["mention", "text_mention", "bot_command"]);
+    if (!shouldHandleTelegramInbound({
+      chatType: chat.type,
+      botId: ctx.me.id,
+      botUsername: ctx.me.username,
+      entities,
+    })) {
+      this.log("debug", `group message ignored without bot mention chat=${chat.id}`);
+      return;
+    }
+
+    const text = normalizeTelegramPromptText(msg.text, ctx.me.username);
+    if (!text) return;
+
     // Use chat_id as ACP sessionId
     const chatId = String(chat.id);
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
+      senderId: String(from.id),
+      platformMessageId: String(msg.message_id),
+      scope: chat.type === "private" ? "dm" : "group",
+      addressedBy: chat.type === "private" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
 
-    this.log("debug", `message chat=${chatId} text=${msg.text.slice(0, 80)}`);
+    this.log("debug", `message chat=${chatId} text=${text.slice(0, 80)}`);
+
+    if (isChannelStopCommand(text)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
 
     // If a permission prompt is awaiting a text reply, consume this message.
-    if (this.streamHandler?.consumePendingText(chatId, msg.text)) {
+    if (this.streamHandler?.consumePendingText(target, text)) {
       return;
     }
 
     // Notify stream handler before prompt
-    this.streamHandler?.onPromptSent(chatId);
+    this.streamHandler?.onPromptSent(target);
 
     // Show typing indicator — resend every 4s (Telegram expires it after ~5s)
     await this.bot.api.sendChatAction(chat.id, "typing").catch(() => {});
@@ -122,16 +175,20 @@ export class TelegramBot {
     // Send as ACP prompt — blocks until turn completes, returns real StopReason.
     // Session notifications stream in during the call.
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
-        prompt: [{ type: "text", text: msg.text }],
+      const response = await sendChannelPrompt(this.agent, {
+        context: inboundContext,
+        prompt: [{ type: "text", text }],
       });
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
-      this.streamHandler?.onTurnError(chatId, msg);
+      await this.streamHandler?.onTurnError(target, msg);
     } finally {
       clearInterval(typingInterval);
     }
@@ -145,9 +202,35 @@ export class TelegramBot {
     const from = msg.from;
     if (!from) return;
 
+    const entities = ctx.entities(["mention", "text_mention", "bot_command"]);
+    if (!shouldHandleTelegramInbound({
+      chatType: chat.type,
+      botId: ctx.me.id,
+      botUsername: ctx.me.username,
+      entities,
+    })) {
+      this.log("debug", `group media ignored without bot mention chat=${chat.id}`);
+      return;
+    }
+
     const chatId = String(chat.id);
     const messageId = String(msg.message_id);
-    const caption = msg.caption ?? "";
+    const caption = normalizeTelegramPromptText(msg.caption ?? "", ctx.me.username);
+    const inboundContext = {
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId,
+      topicId: msg.message_thread_id == null ? undefined : String(msg.message_thread_id),
+      senderId: String(from.id),
+      platformMessageId: messageId,
+      scope: chat.type === "private" ? "dm" : "group",
+      addressedBy: chat.type === "private" ? "dm" : "mention",
+    } satisfies ChannelInboundContext;
+    const target = channelTargetFromInboundContext(inboundContext);
+    if (caption && isChannelStopCommand(caption)) {
+      await cancelChannelPrompt(this.agent, { context: inboundContext });
+      return;
+    }
 
     // Determine file info based on message type
     let fileId: string | undefined;
@@ -231,7 +314,7 @@ export class TelegramBot {
     }
 
     // Notify stream handler before prompt
-    this.streamHandler?.onPromptSent(chatId);
+    this.streamHandler?.onPromptSent(target);
 
     // Typing indicator
     await this.bot.api.sendChatAction(chat.id, "typing").catch(() => {});
@@ -240,16 +323,20 @@ export class TelegramBot {
     }, 4000);
 
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
+      const response = await sendChannelPrompt(this.agent, {
+        context: inboundContext,
         prompt: contentBlocks,
       });
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
       this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const msg = extractErrorMessage(error);
       this.log("error", `prompt failed chat=${chatId}: ${msg}`);
-      this.streamHandler?.onTurnError(chatId, msg);
+      await this.streamHandler?.onTurnError(target, msg);
     } finally {
       clearInterval(typingInterval);
     }
@@ -313,6 +400,22 @@ export class TelegramBot {
     }
 
     // Generic callback — forward to host.
+    const callbackContext = createTelegramCallbackContext({
+      channelInstanceId: this.channelInstanceId,
+      actorId: this.actorId,
+      chatId: String(chatId),
+      topicId:
+        query.message &&
+        "message_thread_id" in query.message &&
+        query.message.message_thread_id != null
+          ? String(query.message.message_thread_id)
+          : undefined,
+      senderId: String(from.id),
+      platformMessageId: query.message
+        ? String(query.message.message_id)
+        : undefined,
+      scope: query.message?.chat.type === "private" ? "dm" : "group",
+    });
     this.agent
       .extNotification?.("_va/callback", {
         chatId: String(chatId),
@@ -326,6 +429,7 @@ export class TelegramBot {
         messageId: query.message
           ? String(query.message.message_id)
           : undefined,
+        "va.channel": callbackContext,
       })
       .catch(() => {});
 
