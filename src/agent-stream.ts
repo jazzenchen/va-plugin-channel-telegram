@@ -6,6 +6,7 @@
 import {
   BlockRenderer,
   type BlockKind,
+  type ChannelTarget,
   type RequestPermissionRequest,
   type VerboseConfig,
 } from "@vibearound/plugin-channel-sdk";
@@ -30,11 +31,11 @@ export class AgentStreamHandler extends BlockRenderer<number> {
 
   /** Render permission request as inline keyboard. */
   protected async onRequestPermission(
-    chatId: string,
+    target: ChannelTarget,
     request: RequestPermissionRequest,
     callbackId: string,
   ): Promise<void> {
-    const id = parseInt(chatId, 10);
+    const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return;
     const options = request.options ?? [];
     const toolTitle =
@@ -55,20 +56,33 @@ export class AgentStreamHandler extends BlockRenderer<number> {
     await this.telegramBot.bot.api.sendMessage(
       id,
       `🔐 Permission required — ${toolTitle}`,
-      { reply_markup: { inline_keyboard: keyboard } },
+      {
+        ...telegramDeliveryOptions(target),
+        reply_markup: { inline_keyboard: keyboard },
+      },
     );
   }
 
-  protected async sendText(chatId: string, text: string): Promise<void> {
-    const id = parseInt(chatId, 10);
-    if (!isNaN(id)) await this.telegramBot.bot.api.sendMessage(id, text);
+  protected async sendText(target: ChannelTarget, text: string): Promise<void> {
+    const id = parseInt(target.chatId, 10);
+    if (!isNaN(id)) {
+      await this.telegramBot.bot.api.sendMessage(
+        id,
+        text,
+        telegramDeliveryOptions(target),
+      );
+    }
   }
 
-  protected async sendBlock(chatId: string, _kind: BlockKind, content: string): Promise<number | null> {
-    const id = parseInt(chatId, 10);
+  protected async sendBlock(target: ChannelTarget, _kind: BlockKind, content: string): Promise<number | null> {
+    const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return null;
     try {
-      const msg = await this.telegramBot.bot.api.sendMessage(id, content);
+      const msg = await this.telegramBot.bot.api.sendMessage(
+        id,
+        content,
+        telegramDeliveryOptions(target),
+      );
       return msg.message_id;
     } catch (e) {
       this.log("error", `sendBlock failed: ${e}`);
@@ -77,13 +91,13 @@ export class AgentStreamHandler extends BlockRenderer<number> {
   }
 
   protected async editBlock(
-    chatId: string,
+    target: ChannelTarget,
     ref: number,
     _kind: BlockKind,
     content: string,
     _sealed: boolean,
   ): Promise<void> {
-    const id = parseInt(chatId, 10);
+    const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return;
     try {
       await this.telegramBot.bot.api.editMessageText(id, ref, content);
@@ -91,4 +105,22 @@ export class AgentStreamHandler extends BlockRenderer<number> {
       this.log("error", `editBlock failed: ${e}`);
     }
   }
+}
+
+function telegramDeliveryOptions(target: ChannelTarget): {
+  message_thread_id?: number;
+  reply_parameters?: { message_id: number };
+} {
+  const topicId = parseTelegramMessageId(target.topicId);
+  const replyTo = parseTelegramMessageId(target.replyTo);
+  return {
+    ...(topicId == null ? {} : { message_thread_id: topicId }),
+    ...(replyTo == null ? {} : { reply_parameters: { message_id: replyTo } }),
+  };
+}
+
+function parseTelegramMessageId(value: string | undefined): number | undefined {
+  if (value == null || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
