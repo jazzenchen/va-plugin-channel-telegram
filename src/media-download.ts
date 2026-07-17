@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Api } from "grammy";
+import { readBoundedResponse } from "./bounded-response.js";
 
 function log(level: string, msg: string): void {
   process.stderr.write(`[telegram-media][${level}] ${msg}\n`);
@@ -71,7 +72,7 @@ export async function downloadTelegramFile(params: {
     // grammY provides a helper URL via file.getUrl() but we need the raw token approach
     // Actually, the Bot API object doesn't expose the token. Use the file download URL directly.
     const url = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
-    log("debug", `downloading ${type} fileId=${fileId.slice(0, 20)}... url=${url.slice(0, 80)}...`);
+    log("debug", `downloading ${type} fileId=${fileId.slice(0, 20)}...`);
 
     const res = await fetch(url);
     if (!res.ok) {
@@ -79,7 +80,7 @@ export async function downloadTelegramFile(params: {
       return null;
     }
 
-    const buf = Buffer.from(await res.arrayBuffer());
+    const buf = await readBoundedResponse(res);
     log("debug", `downloaded ${buf.length} bytes for ${type}`);
 
     await fs.mkdir(path.dirname(cachePath), { recursive: true });
