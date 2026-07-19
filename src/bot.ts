@@ -105,9 +105,7 @@ export class TelegramBot {
 
     this.bot.on("message:text", (ctx) => this.handleTextMessage(ctx));
 
-    this.bot.on("callback_query:data", (ctx) => {
-      this.handleCallbackQuery(ctx);
-    });
+    this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
 
     this.bot.catch((err) => {
       this.log("error", `bot error: ${err.message}`);
@@ -348,7 +346,7 @@ export class TelegramBot {
     }
   }
 
-  private handleCallbackQuery(ctx: Context): void {
+  private async handleCallbackQuery(ctx: Context): Promise<void> {
     const query = ctx.callbackQuery;
     if (!query || !query.data) return;
 
@@ -422,22 +420,20 @@ export class TelegramBot {
         : undefined,
       scope: query.message?.chat.type === "private" ? "dm" : "group",
     });
-    this.agent
-      .extNotification?.("_va/callback", {
-        chatId: String(chatId),
-        callbackId: query.id,
-        sender: {
-          id: String(from.id),
-          name: [from.first_name, from.last_name].filter(Boolean).join(" "),
-          username: from.username,
-        },
-        data: query.data,
-        messageId: query.message
-          ? String(query.message.message_id)
-          : undefined,
-        "va.channel": callbackContext,
-      })
-      .catch(() => {});
+    await this.agent.extNotification?.("_va/callback", {
+      chatId: String(chatId),
+      callbackId: query.id,
+      sender: {
+        id: String(from.id),
+        name: [from.first_name, from.last_name].filter(Boolean).join(" "),
+        username: from.username,
+      },
+      data: query.data,
+      messageId: query.message
+        ? String(query.message.message_id)
+        : undefined,
+      "va.channel": callbackContext,
+    });
 
     ctx.answerCallbackQuery().catch(() => {});
   }

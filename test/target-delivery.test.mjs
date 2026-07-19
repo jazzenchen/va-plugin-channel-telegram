@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AgentStreamHandler } from "../dist/agent-stream.js";
+import { TelegramBot } from "../dist/bot.js";
 
 const target = {
   channelInstanceId: "telegram-primary",
@@ -97,6 +98,34 @@ test("Telegram transport failures reject block delivery", async () => {
       true,
     ),
     editFailure,
+  );
+});
+
+test("Telegram generic callback delivery failures reach the bot error boundary", async () => {
+  const failure = new Error("callback delivery failed");
+  const bot = Object.create(TelegramBot.prototype);
+  bot.agent = {
+    async extNotification() {
+      throw failure;
+    },
+  };
+  bot.channelInstanceId = "telegram-primary";
+  bot.actorId = "telegram-bot";
+
+  await assert.rejects(
+    bot.handleCallbackQuery({
+      callbackQuery: {
+        id: "callback-1",
+        data: "action-1",
+        from: { id: 42, first_name: "Test" },
+        message: {
+          message_id: 1234,
+          chat: { id: -100123456, type: "group" },
+        },
+      },
+      answerCallbackQuery: async () => {},
+    }),
+    failure,
   );
 });
 
