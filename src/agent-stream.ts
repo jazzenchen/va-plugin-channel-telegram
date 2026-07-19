@@ -1,6 +1,6 @@
 /**
  * Telegram stream renderer — extends BlockRenderer with Telegram-specific transport.
- * TRef = number (Telegram message ID).
+ * TRef = TelegramBlockRef (one or more Telegram message IDs).
  */
 
 import {
@@ -12,7 +12,16 @@ import {
 } from "@vibearound/plugin-channel-sdk";
 import type { TelegramBot } from "./bot.js";
 
-export class AgentStreamHandler extends BlockRenderer<number> {
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+interface TelegramBlockRef {
+  messages: Array<{
+    messageId: number;
+    content: string;
+  }>;
+}
+
+export class AgentStreamHandler extends BlockRenderer<TelegramBlockRef> {
   private telegramBot: TelegramBot;
 
   constructor(telegramBot: TelegramBot, verbose?: Partial<VerboseConfig>) {
@@ -62,36 +71,80 @@ export class AgentStreamHandler extends BlockRenderer<number> {
   protected async sendText(target: ChannelTarget, text: string): Promise<void> {
     const id = parseInt(target.chatId, 10);
     if (!isNaN(id)) {
-      await this.telegramBot.bot.api.sendMessage(
-        id,
-        text,
-        telegramDeliveryOptions(target),
-      );
+      for (const part of splitTelegramText(text)) {
+        await this.telegramBot.bot.api.sendMessage(
+          id,
+          part,
+          telegramDeliveryOptions(target),
+        );
+      }
     }
   }
 
-  protected async sendBlock(target: ChannelTarget, _kind: BlockKind, content: string): Promise<number | null> {
+  protected async sendBlock(
+    target: ChannelTarget,
+    _kind: BlockKind,
+    content: string,
+  ): Promise<TelegramBlockRef | null> {
     const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return null;
-    const msg = await this.telegramBot.bot.api.sendMessage(
-      id,
-      content,
-      telegramDeliveryOptions(target),
-    );
-    return msg.message_id;
+    const messages: TelegramBlockRef["messages"] = [];
+    for (const part of splitTelegramText(content)) {
+      const msg = await this.telegramBot.bot.api.sendMessage(
+        id,
+        part,
+        telegramDeliveryOptions(target),
+      );
+      messages.push({ messageId: msg.message_id, content: part });
+    }
+    return { messages };
   }
 
   protected async editBlock(
     target: ChannelTarget,
-    ref: number,
+    ref: TelegramBlockRef,
     _kind: BlockKind,
     content: string,
     _sealed: boolean,
   ): Promise<void> {
     const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return;
-    await this.telegramBot.bot.api.editMessageText(id, ref, content);
+    const parts = splitTelegramText(content);
+    for (let index = 0; index < parts.length; index += 1) {
+      const existing = ref.messages[index];
+      if (existing != null) {
+        if (existing.content === parts[index]) continue;
+        await this.telegramBot.bot.api.editMessageText(
+          id,
+          existing.messageId,
+          parts[index],
+        );
+        existing.content = parts[index];
+        continue;
+      }
+      const msg = await this.telegramBot.bot.api.sendMessage(
+        id,
+        parts[index],
+        telegramDeliveryOptions(target),
+      );
+      ref.messages.push({ messageId: msg.message_id, content: parts[index] });
+    }
   }
+}
+
+function splitTelegramText(text: string): string[] {
+  const characters = Array.from(text);
+  if (characters.length <= TELEGRAM_MESSAGE_LIMIT) return [text];
+
+  const parts: string[] = [];
+  for (
+    let index = 0;
+    index < characters.length;
+    index += TELEGRAM_MESSAGE_LIMIT
+  ) {
+    parts.push(characters.slice(index, index + TELEGRAM_MESSAGE_LIMIT).join(""));
+  }
+  return parts;
 }
 
 function telegramDeliveryOptions(target: ChannelTarget): {

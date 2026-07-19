@@ -13,16 +13,19 @@ const target = {
 
 function createRenderer(overrides = {}) {
   const sends = [];
+  const edits = [];
+  let nextMessageId = 9876;
   const telegramBot = {
     bot: {
       api: {
         async sendMessage(...args) {
           if (overrides.sendMessage) return overrides.sendMessage(...args);
           sends.push(args);
-          return { message_id: 9876 };
+          return { message_id: nextMessageId++ };
         },
         async editMessageText(...args) {
           if (overrides.editMessageText) return overrides.editMessageText(...args);
+          edits.push(args);
         },
       },
     },
@@ -30,6 +33,7 @@ function createRenderer(overrides = {}) {
   return {
     renderer: new AgentStreamHandler(telegramBot),
     sends,
+    edits,
   };
 }
 
@@ -85,7 +89,70 @@ test("Telegram transport failures reject block delivery", async () => {
     sendFailure,
   );
   await assert.rejects(
-    editRenderer.editBlock(target, 9876, "text", "updated", true),
+    editRenderer.editBlock(
+      target,
+      { messages: [{ messageId: 9876, content: "answer" }] },
+      "text",
+      "updated",
+      true,
+    ),
     editFailure,
   );
+});
+
+test("Telegram splits plain and initial block messages by Unicode characters", async () => {
+  const systemText = "🙂".repeat(4097);
+  const blockText = `${"甲".repeat(4096)}${"🙂".repeat(4097)}`;
+  const systemDelivery = createRenderer();
+  const blockDelivery = createRenderer();
+
+  await systemDelivery.renderer.sendText(target, systemText);
+  const ref = await blockDelivery.renderer.sendBlock(target, "text", blockText);
+
+  assert.equal(systemDelivery.sends.map(([, text]) => text).join(""), systemText);
+  assert.equal(blockDelivery.sends.map(([, text]) => text).join(""), blockText);
+  assert.deepEqual(
+    ref.messages.map(({ messageId }) => messageId),
+    [9876, 9877, 9878],
+  );
+  for (const [, text, options] of [
+    ...systemDelivery.sends,
+    ...blockDelivery.sends,
+  ]) {
+    assert.ok(Array.from(text).length <= 4096);
+    assert.deepEqual(options, {
+      message_thread_id: 42,
+      reply_parameters: { message_id: 1234 },
+    });
+  }
+});
+
+test("Telegram streaming edits existing segments and appends new ones", async () => {
+  const { renderer, sends, edits } = createRenderer();
+  const firstPart = "A".repeat(4096);
+  const ref = await renderer.sendBlock(target, "text", firstPart);
+  assert.ok(ref);
+
+  const twoParts = `${firstPart}B`;
+  await renderer.editBlock(target, ref, "text", twoParts, false);
+  assert.deepEqual(
+    ref.messages.map(({ messageId }) => messageId),
+    [9876, 9877],
+  );
+  assert.equal(edits.length, 0);
+
+  const threeParts = `${firstPart}${"B".repeat(4096)}C`;
+  await renderer.editBlock(target, ref, "text", threeParts, true);
+  assert.deepEqual(
+    ref.messages.map(({ messageId }) => messageId),
+    [9876, 9877, 9878],
+  );
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0][1], 9877);
+  assert.equal(ref.messages.map(({ content }) => content).join(""), threeParts);
+  assert.deepEqual(sends[1][2], sends[0][2]);
+  assert.deepEqual(sends[2][2], sends[0][2]);
+  for (const { content } of ref.messages) {
+    assert.ok(Array.from(content).length <= 4096);
+  }
 });
