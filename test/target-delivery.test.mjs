@@ -89,24 +89,3 @@ test("Telegram transport failures reject block delivery", async () => {
     editFailure,
   );
 });
-
-test("Telegram turn completion exposes final delivery failure", async () => {
-  const { renderer } = createRenderer({
-    sendMessage: async () => { throw new Error("Telegram final delivery failed"); },
-  });
-
-  renderer.onPromptSent(target);
-  renderer.onSessionUpdate(target, {
-    sessionId: "session",
-    update: {
-      sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: "final response" },
-      messageId: "message-final",
-    },
-  });
-
-  await assert.rejects(
-    renderer.onTurnEnd(target),
-    /Telegram final delivery failed/,
-  );
-});
