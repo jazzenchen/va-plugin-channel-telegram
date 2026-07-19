@@ -149,7 +149,7 @@ export class TelegramBot {
     } satisfies ChannelInboundContext;
     const target = channelTargetFromInboundContext(inboundContext);
 
-    this.log("debug", `message chat=${chatId} text=${text.slice(0, 80)}`);
+    this.log("debug", `message chat=${chatId} text=${Boolean(text)}`);
 
     if (isChannelStopCommand(text)) {
       await cancelChannelPrompt(this.agent, { context: inboundContext });
@@ -277,7 +277,10 @@ export class TelegramBot {
 
     if (!fileId) return;
 
-    this.log("debug", `media message chat=${chatId} type=${mediaType} caption=${caption.slice(0, 80)}`);
+    this.log(
+      "debug",
+      `media message chat=${chatId} type=${mediaType} caption=${Boolean(caption)}`,
+    );
 
     // Download and cache the file
     const media = await downloadTelegramFile({
