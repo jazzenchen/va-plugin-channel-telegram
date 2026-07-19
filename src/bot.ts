@@ -8,6 +8,7 @@
  */
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 import {
@@ -247,7 +248,9 @@ export class TelegramBot {
       fileId = msg.document.file_id;
       fileName = msg.document.file_name ?? undefined;
       mimeType = msg.document.mime_type ?? "application/octet-stream";
-      ext = fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : ".bin";
+      ext = fileName
+        ? path.extname(path.posix.basename(fileName.replaceAll("\\", "/"))) || ".bin"
+        : ".bin";
       mediaType = "file";
     } else if (msg.video) {
       fileId = msg.video.file_id;
@@ -264,7 +267,9 @@ export class TelegramBot {
       fileId = msg.audio.file_id;
       fileName = msg.audio.file_name ?? undefined;
       mimeType = msg.audio.mime_type ?? "audio/mpeg";
-      ext = fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : ".mp3";
+      ext = fileName
+        ? path.extname(path.posix.basename(fileName.replaceAll("\\", "/"))) || ".mp3"
+        : ".mp3";
       mediaType = "audio";
     } else if (msg.sticker) {
       fileId = msg.sticker.file_id;
@@ -308,7 +313,7 @@ export class TelegramBot {
     if (media) {
       contentBlocks.push({
         type: "resource_link",
-        uri: `file://${media.path}`,
+        uri: pathToFileURL(media.path).href,
         name: media.fileName ?? path.basename(media.path),
         mimeType: media.mimeType,
       });
