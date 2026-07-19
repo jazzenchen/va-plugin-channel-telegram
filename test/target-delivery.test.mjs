@@ -11,21 +11,24 @@ const target = {
   replyTo: "1234",
 };
 
-function createRenderer() {
+function createRenderer(overrides = {}) {
   const sends = [];
   const telegramBot = {
     bot: {
       api: {
         async sendMessage(...args) {
+          if (overrides.sendMessage) return overrides.sendMessage(...args);
           sends.push(args);
           return { message_id: 9876 };
         },
-        async editMessageText() {},
+        async editMessageText(...args) {
+          if (overrides.editMessageText) return overrides.editMessageText(...args);
+        },
       },
     },
   };
   return {
-    renderer: new AgentStreamHandler(telegramBot, () => {}),
+    renderer: new AgentStreamHandler(telegramBot),
     sends,
   };
 }
@@ -65,4 +68,45 @@ test("Telegram permission buttons preserve the active target", async () => {
       }]],
     },
   });
+});
+
+test("Telegram transport failures reject block delivery", async () => {
+  const sendFailure = new Error("Telegram send failed");
+  const editFailure = new Error("Telegram edit failed");
+  const sendRenderer = createRenderer({
+    sendMessage: async () => { throw sendFailure; },
+  }).renderer;
+  const editRenderer = createRenderer({
+    editMessageText: async () => { throw editFailure; },
+  }).renderer;
+
+  await assert.rejects(
+    sendRenderer.sendBlock(target, "text", "answer"),
+    sendFailure,
+  );
+  await assert.rejects(
+    editRenderer.editBlock(target, 9876, "text", "updated", true),
+    editFailure,
+  );
+});
+
+test("Telegram turn completion exposes final delivery failure", async () => {
+  const { renderer } = createRenderer({
+    sendMessage: async () => { throw new Error("Telegram final delivery failed"); },
+  });
+
+  renderer.onPromptSent(target);
+  renderer.onSessionUpdate(target, {
+    sessionId: "session",
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "final response" },
+      messageId: "message-final",
+    },
+  });
+
+  await assert.rejects(
+    renderer.onTurnEnd(target),
+    /Telegram final delivery failed/,
+  );
 });

@@ -12,13 +12,10 @@ import {
 } from "@vibearound/plugin-channel-sdk";
 import type { TelegramBot } from "./bot.js";
 
-type LogFn = (level: string, msg: string) => void;
-
 export class AgentStreamHandler extends BlockRenderer<number> {
   private telegramBot: TelegramBot;
-  private log: LogFn;
 
-  constructor(telegramBot: TelegramBot, log: LogFn, verbose?: Partial<VerboseConfig>) {
+  constructor(telegramBot: TelegramBot, verbose?: Partial<VerboseConfig>) {
     super({
       streaming: true,
       flushIntervalMs: 500,
@@ -26,7 +23,6 @@ export class AgentStreamHandler extends BlockRenderer<number> {
       verbose,
     });
     this.telegramBot = telegramBot;
-    this.log = log;
   }
 
   /** Render permission request as inline keyboard. */
@@ -77,17 +73,12 @@ export class AgentStreamHandler extends BlockRenderer<number> {
   protected async sendBlock(target: ChannelTarget, _kind: BlockKind, content: string): Promise<number | null> {
     const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return null;
-    try {
-      const msg = await this.telegramBot.bot.api.sendMessage(
-        id,
-        content,
-        telegramDeliveryOptions(target),
-      );
-      return msg.message_id;
-    } catch (e) {
-      this.log("error", `sendBlock failed: ${e}`);
-      return null;
-    }
+    const msg = await this.telegramBot.bot.api.sendMessage(
+      id,
+      content,
+      telegramDeliveryOptions(target),
+    );
+    return msg.message_id;
   }
 
   protected async editBlock(
@@ -99,11 +90,7 @@ export class AgentStreamHandler extends BlockRenderer<number> {
   ): Promise<void> {
     const id = parseInt(target.chatId, 10);
     if (isNaN(id)) return;
-    try {
-      await this.telegramBot.bot.api.editMessageText(id, ref, content);
-    } catch (e) {
-      this.log("error", `editBlock failed: ${e}`);
-    }
+    await this.telegramBot.bot.api.editMessageText(id, ref, content);
   }
 }
 

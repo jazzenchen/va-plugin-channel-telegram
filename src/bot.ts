@@ -95,16 +95,14 @@ export class TelegramBot {
   // --------------------------------------------------------------------------
 
   private registerHandlers(): void {
-    this.bot.on("message:photo", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:document", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:video", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:voice", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:audio", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:sticker", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:photo", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:document", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:video", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:voice", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:audio", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:sticker", (ctx) => this.handleMediaMessage(ctx));
 
-    this.bot.on("message:text", (ctx) => {
-      this.handleTextMessage(ctx);
-    });
+    this.bot.on("message:text", (ctx) => this.handleTextMessage(ctx));
 
     this.bot.on("callback_query:data", (ctx) => {
       this.handleCallbackQuery(ctx);
