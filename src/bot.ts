@@ -8,6 +8,7 @@
  */
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Bot, type Context } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 import {
@@ -95,20 +96,16 @@ export class TelegramBot {
   // --------------------------------------------------------------------------
 
   private registerHandlers(): void {
-    this.bot.on("message:photo", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:document", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:video", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:voice", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:audio", (ctx) => { this.handleMediaMessage(ctx); });
-    this.bot.on("message:sticker", (ctx) => { this.handleMediaMessage(ctx); });
+    this.bot.on("message:photo", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:document", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:video", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:voice", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:audio", (ctx) => this.handleMediaMessage(ctx));
+    this.bot.on("message:sticker", (ctx) => this.handleMediaMessage(ctx));
 
-    this.bot.on("message:text", (ctx) => {
-      this.handleTextMessage(ctx);
-    });
+    this.bot.on("message:text", (ctx) => this.handleTextMessage(ctx));
 
-    this.bot.on("callback_query:data", (ctx) => {
-      this.handleCallbackQuery(ctx);
-    });
+    this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
 
     this.bot.catch((err) => {
       this.log("error", `bot error: ${err.message}`);
@@ -151,7 +148,7 @@ export class TelegramBot {
     } satisfies ChannelInboundContext;
     const target = channelTargetFromInboundContext(inboundContext);
 
-    this.log("debug", `message chat=${chatId} text=${text.slice(0, 80)}`);
+    this.log("debug", `message chat=${chatId} text=${Boolean(text)}`);
 
     if (isChannelStopCommand(text)) {
       await cancelChannelPrompt(this.agent, { context: inboundContext });
@@ -249,7 +246,9 @@ export class TelegramBot {
       fileId = msg.document.file_id;
       fileName = msg.document.file_name ?? undefined;
       mimeType = msg.document.mime_type ?? "application/octet-stream";
-      ext = fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : ".bin";
+      ext = fileName
+        ? path.extname(path.posix.basename(fileName.replaceAll("\\", "/"))) || ".bin"
+        : ".bin";
       mediaType = "file";
     } else if (msg.video) {
       fileId = msg.video.file_id;
@@ -266,7 +265,9 @@ export class TelegramBot {
       fileId = msg.audio.file_id;
       fileName = msg.audio.file_name ?? undefined;
       mimeType = msg.audio.mime_type ?? "audio/mpeg";
-      ext = fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : ".mp3";
+      ext = fileName
+        ? path.extname(path.posix.basename(fileName.replaceAll("\\", "/"))) || ".mp3"
+        : ".mp3";
       mediaType = "audio";
     } else if (msg.sticker) {
       fileId = msg.sticker.file_id;
@@ -279,7 +280,10 @@ export class TelegramBot {
 
     if (!fileId) return;
 
-    this.log("debug", `media message chat=${chatId} type=${mediaType} caption=${caption.slice(0, 80)}`);
+    this.log(
+      "debug",
+      `media message chat=${chatId} type=${mediaType} caption=${Boolean(caption)}`,
+    );
 
     // Download and cache the file
     const media = await downloadTelegramFile({
@@ -307,7 +311,7 @@ export class TelegramBot {
     if (media) {
       contentBlocks.push({
         type: "resource_link",
-        uri: `file://${media.path}`,
+        uri: pathToFileURL(media.path).href,
         name: media.fileName ?? path.basename(media.path),
         mimeType: media.mimeType,
       });
@@ -342,7 +346,7 @@ export class TelegramBot {
     }
   }
 
-  private handleCallbackQuery(ctx: Context): void {
+  private async handleCallbackQuery(ctx: Context): Promise<void> {
     const query = ctx.callbackQuery;
     if (!query || !query.data) return;
 
@@ -416,8 +420,8 @@ export class TelegramBot {
         : undefined,
       scope: query.message?.chat.type === "private" ? "dm" : "group",
     });
-    this.agent
-      .extNotification?.("_va/callback", {
+    try {
+      await this.agent.extNotification?.("_va/callback", {
         chatId: String(chatId),
         callbackId: query.id,
         sender: {
@@ -430,9 +434,14 @@ export class TelegramBot {
           ? String(query.message.message_id)
           : undefined,
         "va.channel": callbackContext,
-      })
-      .catch(() => {});
+      });
+    } catch (error) {
+      await ctx
+        .answerCallbackQuery({ text: "Action failed. Please try again." })
+        .catch(() => {});
+      throw error;
+    }
 
-    ctx.answerCallbackQuery().catch(() => {});
+    await ctx.answerCallbackQuery();
   }
 }

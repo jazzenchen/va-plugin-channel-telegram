@@ -28,8 +28,8 @@ runChannelPlugin({
     const botInfo = await bot.probe();
     log("info", `bot identity: @${botInfo.username} (${botInfo.id})`);
   },
-  createRenderer: (bot, log, verbose) =>
-    new AgentStreamHandler(bot, log, verbose),
+  createRenderer: (bot, _log, verbose) =>
+    new AgentStreamHandler(bot, verbose),
   // A successful getMe() does not prove long polling is still running.
   healthCheck: async (bot) => bot.isPolling(),
 });
