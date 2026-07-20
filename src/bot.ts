@@ -420,21 +420,28 @@ export class TelegramBot {
         : undefined,
       scope: query.message?.chat.type === "private" ? "dm" : "group",
     });
-    await this.agent.extNotification?.("_va/callback", {
-      chatId: String(chatId),
-      callbackId: query.id,
-      sender: {
-        id: String(from.id),
-        name: [from.first_name, from.last_name].filter(Boolean).join(" "),
-        username: from.username,
-      },
-      data: query.data,
-      messageId: query.message
-        ? String(query.message.message_id)
-        : undefined,
-      "va.channel": callbackContext,
-    });
+    try {
+      await this.agent.extNotification?.("_va/callback", {
+        chatId: String(chatId),
+        callbackId: query.id,
+        sender: {
+          id: String(from.id),
+          name: [from.first_name, from.last_name].filter(Boolean).join(" "),
+          username: from.username,
+        },
+        data: query.data,
+        messageId: query.message
+          ? String(query.message.message_id)
+          : undefined,
+        "va.channel": callbackContext,
+      });
+    } catch (error) {
+      await ctx
+        .answerCallbackQuery({ text: "Action failed. Please try again." })
+        .catch(() => {});
+      throw error;
+    }
 
-    ctx.answerCallbackQuery().catch(() => {});
+    await ctx.answerCallbackQuery();
   }
 }

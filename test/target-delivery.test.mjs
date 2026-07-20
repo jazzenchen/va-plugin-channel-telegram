@@ -103,6 +103,8 @@ test("Telegram transport failures reject block delivery", async () => {
 
 test("Telegram generic callback delivery failures reach the bot error boundary", async () => {
   const failure = new Error("callback delivery failed");
+  const answerFailure = new Error("callback answer failed");
+  const answers = [];
   const bot = Object.create(TelegramBot.prototype);
   bot.agent = {
     async extNotification() {
@@ -123,10 +125,14 @@ test("Telegram generic callback delivery failures reach the bot error boundary",
           chat: { id: -100123456, type: "group" },
         },
       },
-      answerCallbackQuery: async () => {},
+      answerCallbackQuery: async (answer) => {
+        answers.push(answer);
+        throw answerFailure;
+      },
     }),
     failure,
   );
+  assert.deepEqual(answers, [{ text: "Action failed. Please try again." }]);
 });
 
 test("Telegram splits plain and initial block messages by Unicode characters", async () => {
