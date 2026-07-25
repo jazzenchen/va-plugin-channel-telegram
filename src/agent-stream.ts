@@ -7,9 +7,11 @@ import {
   BlockRenderer,
   type BlockKind,
   type ChannelTarget,
+  type OutboundFile,
   type RequestPermissionRequest,
   type VerboseConfig,
 } from "@vibearound/plugin-channel-sdk";
+import { InputFile } from "grammy";
 import type { TelegramBot } from "./bot.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
@@ -79,6 +81,19 @@ export class AgentStreamHandler extends BlockRenderer<TelegramBlockRef> {
         );
       }
     }
+  }
+
+  protected async sendFile(
+    target: ChannelTarget,
+    file: OutboundFile,
+  ): Promise<void> {
+    const id = parseInt(target.chatId, 10);
+    if (isNaN(id)) return;
+    await this.telegramBot.bot.api.sendDocument(
+      id,
+      new InputFile(file.path, file.name),
+      telegramDeliveryOptions(target),
+    );
   }
 
   protected async sendBlock(
