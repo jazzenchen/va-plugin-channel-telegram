@@ -14,6 +14,7 @@ const target = {
 
 function createRenderer(overrides = {}) {
   const sends = [];
+  const documents = [];
   const edits = [];
   let nextMessageId = 9876;
   const telegramBot = {
@@ -28,15 +29,36 @@ function createRenderer(overrides = {}) {
           if (overrides.editMessageText) return overrides.editMessageText(...args);
           edits.push(args);
         },
+        async sendDocument(...args) {
+          if (overrides.sendDocument) return overrides.sendDocument(...args);
+          documents.push(args);
+        },
       },
     },
   };
   return {
     renderer: new AgentStreamHandler(telegramBot),
     sends,
+    documents,
     edits,
   };
 }
+
+test("Telegram uploads files with the active reply target", async () => {
+  const { renderer, documents } = createRenderer();
+
+  await renderer.sendFile(target, {
+    path: "/workspace/report.pdf",
+    name: "report.pdf",
+  });
+
+  assert.equal(documents[0][0], -100123456);
+  assert.equal(documents[0][1].filename, "report.pdf");
+  assert.deepEqual(documents[0][2], {
+    message_thread_id: 42,
+    reply_parameters: { message_id: 1234 },
+  });
+});
 
 test("Telegram maps topicId and replyTo onto every new message", async () => {
   const { renderer, sends } = createRenderer();
